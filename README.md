@@ -537,7 +537,7 @@ Full reference list available in the paper.
 
 - ✅ **Simulation**: Complete and validated
 - ✅ **Paper**: Preprint available
-- ⏳ **Field Trials**: Planned (Q2 2025)
+- ⏳ **Field Trials**: Planned (2026)
 - ⏳ **Multi-Flow**: In development
 - ⏳ **ns-3 Integration**: Planned
 
