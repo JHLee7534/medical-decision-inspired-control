@@ -74,8 +74,6 @@ PLC is a **dual-loop supervisory controller** that exploits LEO's predictability
 ### 2. **Terminal-Side Handover Prediction**
 - **Dual-EMA RTT tracking** (α_short=0.30, α_long=0.05)
 - **O(1) computational complexity** (<0.02 ms per cycle)
-- **85-90% detection accuracy** without satellite telemetry
-- **<5% false positive rate** with congestion filtering
 
 ### 3. **Baseline Controllers**
 - **GCC-like**: Delay-based congestion control (WebRTC standard)
