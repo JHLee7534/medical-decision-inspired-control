@@ -181,15 +181,7 @@ PERFORMANCE:
     - Memory: <100 bytes per controller instance
     - Runtime: ~6-8 minutes for N=50,000 with 4 configs
     - Bootstrap: +10-15 minutes for B=1,000 iterations
-
-VALIDATION:
-    Reproduces main results from Section 3 of the paper:
     
-    Under Heavy Load (75 handovers/500s):
-      - p99 latency reduction: -8.83 ms (p < 0.001)
-      - Variance reduction: -893.27 ms²
-      - Compliance improvement: +6.92 percentage points
-      - Goodput cost: -20.02 kbps (1.3%)
 
 REQUIREMENTS:
     - Python 3.8+
@@ -205,9 +197,6 @@ INSTALLATION:
     $ pip install -r requirements.txt
 
 RELATED FILES:
-    - test_robustness_v1_0.py
-        → Prediction error robustness analysis (Appendix B)
-    
     - README.md
         → Extended documentation and examples
     
