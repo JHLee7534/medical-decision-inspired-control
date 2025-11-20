@@ -1082,7 +1082,7 @@ if __name__ == "__main__":
 
     result_multi = run_multi_flow_sim(
         N=50000,
-        seed=111,
+        seed=1, # seed dependent result
         baseline="bbr",
         include_handover=True,     # LEO with handover
         num_flows=5,
