@@ -691,9 +691,9 @@ def run_multi_flow_sim(
     baseline="bbr",
     include_handover=False,
     num_flows=5,
-    stagger_delay_steps=None,   # 각 flow의 시작 시점 (step 단위 리스트)
-    initial_rates=None,         # 각 flow의 초기 rate (kbps 리스트)
-    plc_flags=None,             # 각 flow PLC 사용 여부 (bool 리스트)
+    stagger_delay_steps=None,   # Start time for each flow (list of steps)
+    initial_rates=None,         # Initial rate for each flow (list in kbps)
+    plc_flags=None,             # PLC enabled flag for each flow (list of bool)
     out_print=True,
     use_codel=False,
     codel_target_ms=20.0,
@@ -704,7 +704,7 @@ def run_multi_flow_sim(
 
     - Per-flow queue + optional CoDel
     - Arbitrary number of flows (num_flows)
-    - 각 flow별 staggered start / initial rate / PLC on/off 설정 가능
+    - each flows; staggered start / initial rate / PLC on/off setting possible
     """
     rng = np.random.default_rng(seed)
 
@@ -764,11 +764,11 @@ def run_multi_flow_sim(
             seed_offset=1000 * i,
             initial_rate_kbps=initial_rates[i],
         )
-        f.active = False   # stagger 처리
+        f.active = False   # stagger 
         flows.append(f)
 
         q = PerFlowQueue(
-            capacity_share_kbps=0.0,   # 매 step에서 업데이트
+            capacity_share_kbps=0.0,   # every step update
             use_codel=use_codel,
             codel_target_ms=codel_target_ms,
             codel_interval_ms=codel_interval_ms,
@@ -777,17 +777,17 @@ def run_multi_flow_sim(
 
     cap_factor = 1.0
 
-    # independence / fairness 관측용
+    # independence / fairness test
     mean_pair_lat_diffs = []
     mean_pair_q_diffs = []
 
     # -----------------------------
-    # 메인 시뮬레이션 루프
+    # Main simulation loop
     # -----------------------------
     for step in range(N):
         now_s = step * leo.DT
 
-        # 각 flow 활성화 (staggered start)
+        # each flows activ. (staggered start)
         for i, f in enumerate(flows):
             if step == stagger_delay_steps[i]:
                 f.active = True
@@ -877,7 +877,7 @@ def run_multi_flow_sim(
             s * 1000.0 * leo.DT / 8.0 for s in sends_kbps
         ]
 
-        # 패킷 손실 적용
+        # packet loss apply
         ho_params = leo.HandoverParams()
         delivered_bytes = [
             flows[i].apply_loss(
@@ -889,11 +889,11 @@ def run_multi_flow_sim(
             for i in range(num_flows)
         ]
 
-        # 큐에 enqueue
+        # enqueue
         for i in range(num_flows):
             queues[i].enqueue(send_bytes[i], now_s)
 
-        # active flow들에 capacity fair share
+        # active flow; capacity fair share
         active_count = sum(1 for f in flows if f.active)
         for i in range(num_flows):
             if active_count > 0 and flows[i].active:
@@ -919,7 +919,7 @@ def run_multi_flow_sim(
                 preho_cfg=preho_cfg,
             )
 
-        # pairwise latency / queue delay 차이 (독립성 관찰용)
+        # pairwise latency / queue delay diff. (independence test)
         if num_flows >= 2:
             pair_lat_diffs = []
             pair_q_diffs = []
@@ -931,7 +931,7 @@ def run_multi_flow_sim(
             mean_pair_q_diffs.append(np.mean(pair_q_diffs))
 
     # -----------------------------
-    # 시뮬레이션 결과 요약
+    # Results summary
     # -----------------------------
     sim_dur_sec = N * leo.DT
     thr_bps = []
