@@ -411,6 +411,7 @@ python LEO_PLC_Final_rule_preho_v1_0.py --preho-rule --rtt-rule --seed 1 --outdi
 ## 🛣️ Roadmap
 
 ### Immediate (0-6 months)
+- [ ] CUBIC-PLC simulation test
 - [ ] Field trials on Starlink terminals
 - [ ] Linux BBR v1 kernel integration
 - [ ] Phase-aware BBR-PLC coordination
