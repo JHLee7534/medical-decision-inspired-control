@@ -5,6 +5,23 @@ test_multi_flow_v1_0.py
 ==================================================================
 Asymmetric 2-Flow Test to Verify Per-Flow Queue Independence
 ==================================================================
+@inproceedings{nichols2012controlling,
+  title={Controlling queue delay},
+  author={Nichols, Kathleen and Jacobson, Van},
+  booktitle={ACM Queue},
+  volume={10},
+  number={5},
+  pages={20--34},
+  year={2012}
+}
+
+@misc{rfc8289,
+  author={K. Nichols and V. Jacobson and A. McGregor and J. Iyengar},
+  title={{Controlled Delay Active Queue Management}},
+  howpublished={RFC 8289},
+  year={2018}
+}
+
 LEO Satellite Network Simulator with Proactive Latency Control (PLC)
 
 Implements dual-loop supervisory control for latency stabilization
