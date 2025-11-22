@@ -20,14 +20,14 @@ See the LICENSE file in the project root for the full license text.
 ==================================================================
 
 PAPER:
-    Lee, J-H. (2025). "Proactive Latency Control for LEO Satellite Handovers: Performance and Integration Requirements"
+    Lee, J-H. (2025). "Proactive Latency Control: Robust Dual-Loop Adaptation for Predictably Uncertain LEO Networks"
     
 
 CITATION:
     If you use this code in your research, please cite:
     
     @article{lee2025plc,
-      title={Proactive Latency Control for LEO Satellite Handovers: Performance and Integration Requirements},
+      title={Proactive Latency Control: Robust Dual-Loop Adaptation for Predictably Uncertain LEO Networks},
       author={Lee, Jin-Hyeong},
       year={2025},
       note={Preprint}
