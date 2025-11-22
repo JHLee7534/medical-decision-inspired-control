@@ -5,7 +5,7 @@
 [![Paper](https://img.shields.io/badge/paper-preprint-green.svg)](https://github.com/JHLee7534/medical-decision-inspired-control)
 
 **Official implementation of the paper:**  
-*"Proactive Latency Control for LEO Satellite Handovers: Performance and Integration Requirements"*  
+*"Proactive Latency Control: Robust Dual-Loop Adaptation for Predictably Uncertain LEO Networks"*  
 Jin-Hyeong Lee, MD (2025)
 
 ---
