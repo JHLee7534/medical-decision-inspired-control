@@ -12,7 +12,7 @@ Jin-Hyeong Lee, MD (2025)
 
 ## 🎯 Overview
 
-This repository provides a complete simulation framework for **Proactive Latency Control (PLC)**, a dual-loop supervisory layer(Layer 4.5) designed to stabilize end-to-end latency in Low Earth Orbit (LEO) satellite networks. PLC addresses the fundamental challenge of predictable yet disruptive handovers that occur every 5-16 seconds in LEO constellations like Starlink, OneWeb, and Kuiper.
+This repository provides a complete simulation framework for **Proactive Latency Control (PLC)**, a dual-loop supervisory layer(Layer 4.5-like) designed to stabilize end-to-end latency in Low Earth Orbit (LEO) satellite networks. PLC addresses the fundamental challenge of predictable yet disruptive handovers that occur every 5-16 seconds in LEO constellations like Starlink, OneWeb, and Kuiper.
 
 ### Key Features
 
