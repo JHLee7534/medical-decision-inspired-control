@@ -1,31 +1,39 @@
 """
-PLC-PID Controller - Conditional Activation
-============================================
-조정된 파라미터 + 조건부 PLC 활성화
+PLC-PID Controller for Vehicle Steering - Visualization Enhanced Version
+=========================================================================
+차량 조향 제어를 위한 PLC-PID 컨트롤러 시각화 버전
 
-PID Baseline (A안):
-- kp=0.1, ki=0.0, kd=0.2
-- Mean lateral error ≈ 0.48~0.59m
-
-PLC 파라미터 (보수적):
-- curvature_threshold = 0.003
-- feedforward_gain = 8.0
-- kp_min = 0.7 * kp_base
-- kp_max = 1.3 * kp_base
-- log_clip_bound = 0.01
-
-조건부 활성화:
-- Sudden Obstacle 같은 급변 상황에서만 PLC ON
-- 그 외에는 순수 PID
+원본 코드에 다음 기능 추가:
+1. 시나리오별 상세 시각화
+2. 제어기 비교 그래프
+3. 성능 지표 막대 그래프
+4. 궤적 시각화
+5. PLC 메커니즘 설명 그래프
 """
 
 import numpy as np
 from collections import deque
 from dataclasses import dataclass
-from typing import Tuple, Dict
+from typing import Tuple, Dict, List
 import warnings
 warnings.filterwarnings('ignore')
 
+import matplotlib.pyplot as plt
+import matplotlib
+import platform
+
+# 플랫폼에 따라 backend 설정
+if platform.system() == 'Windows':
+    matplotlib.use('TkAgg')  # Windows에서는 TkAgg 또는 기본값 사용
+else:
+    matplotlib.use('Agg')  # Linux/서버에서는 Agg 사용
+
+matplotlib.rcParams['font.family'] = 'DejaVu Sans'
+
+
+# =========================
+# 1. 기본 클래스들 (원본 유지)
+# =========================
 
 @dataclass
 class VehicleState:
@@ -125,7 +133,7 @@ class RoadProfile:
             return 0.0, 0.0, 0.0
         elif x < 160:
             t = (x - 140) / 20
-            curvature = 0.025 * np.sin(np.pi * t)  # 최대 곡률 0.025
+            curvature = 0.025 * np.sin(np.pi * t)
             target_y = 3.5 * (1 - np.cos(np.pi * t)) / 2
             road_yaw = np.arctan(0.175 * np.pi * np.sin(np.pi * t))
             return target_y, curvature, road_yaw
@@ -149,8 +157,12 @@ class SensorModel:
         return true_curvature + noise
 
 
+# =========================
+# 2. 제어기 클래스들
+# =========================
+
 class PIDController:
-    """PID Controller (A안 Baseline)"""
+    """PID Controller (Baseline)"""
     def __init__(self, kp=0.1, ki=0.0, kd=0.2, dt=0.01,
                  integral_limit=(-1.0, 1.0), output_limit=(-0.6, 0.6)):
         self.kp = kp
@@ -162,6 +174,7 @@ class PIDController:
         self.integral_limit = integral_limit
         self.output_limit = output_limit
         self.kp_base = kp
+        self.name = "PID"
 
     def reset(self):
         self.integral = 0.0
@@ -181,106 +194,12 @@ class PIDController:
 
 
 class PLCWrapper:
-    """
-    PLC Controller (항상 활성화) - 조정된 파라미터
-    """
+    """PLC Controller (항상 활성화)"""
     def __init__(self, pid: PIDController):
         self.pid = pid
+        self.curvature_threshold = 0.003
+        self.feedforward_gain = 8.0
         
-        # 조정된 파라미터
-        self.curvature_threshold = 0.003    # 기존 0.005
-        self.feedforward_gain = 8.0         # 기존 15.0
-        
-        # Kp 적응 (보수적)
-        self.kp_base = pid.kp
-        self.kp_current = pid.kp
-        self.log_kp = np.log(max(self.kp_current, 1e-6))
-        
-        self.kp_min = 0.7 * self.kp_base    # 기존 0.4
-        self.kp_max = 1.3 * self.kp_base    # 기존 1.5
-        self.log_kp_min = np.log(max(self.kp_min, 1e-6))
-        self.log_kp_max = np.log(max(self.kp_max, 1e-6))
-        
-        self.log_clip_bound = 0.01          # 기존 0.02
-        self.variance_threshold = 0.01
-        
-        self.error_history = deque(maxlen=30)
-        
-    def reset(self):
-        self.pid.reset()
-        self.kp_current = self.kp_base
-        self.log_kp = np.log(max(self.kp_current, 1e-6))
-        self.error_history.clear()
-
-    def compute(self, error: float, lookahead_curvature: float) -> Tuple[float, float, bool]:
-        """
-        Returns: (steering_cmd, current_kp, feedforward_active)
-        """
-        self.error_history.append(error)
-        
-        # Feedforward
-        feedforward = 0.0
-        ff_active = abs(lookahead_curvature) > self.curvature_threshold
-        if ff_active:
-            feedforward = lookahead_curvature * self.feedforward_gain
-        
-        # Kp 적응
-        if len(self.error_history) >= 5:
-            variance = np.var(self.error_history)
-            if variance > self.variance_threshold:
-                log_delta = -0.01  # damping (기존 -0.02)
-            else:
-                log_delta = 0.005  # recovery (기존 0.01)
-            log_delta = np.clip(log_delta, -self.log_clip_bound, self.log_clip_bound)
-            self.log_kp += log_delta
-            self.log_kp = np.clip(self.log_kp, self.log_kp_min, self.log_kp_max)
-            self.kp_current = np.exp(self.log_kp)
-            self.pid.kp = self.kp_current
-        
-        pid_output = self.pid.compute(error)
-        return pid_output + feedforward, self.kp_current, ff_active
-
-
-class ConditionalPLCWrapper:
-    """
-    조건부 PLC Controller
-    
-    평상시: 순수 PID (A안)
-    급변 상황: PLC 피드포워드 + Kp 적응 활성화
-    
-    활성화 조건 (Sudden Obstacle 타겟 - 엄격하게):
-    1. 전방 곡률 >= 0.022 (급회전, sudden_obstacle max=0.025)
-    
-    참고 - 각 시나리오 최대 곡률:
-    - single_curve: 0.01
-    - s_curve: 0.015 (노이즈 포함 ~0.02)
-    - continuous_curves: 0.012
-    - sudden_obstacle: 0.025 ← 이것만 타겟
-    """
-    def __init__(self, pid: PIDController,
-                 # 활성화 임계값 (엄격하게)
-                 curvature_activation_threshold: float = 0.022,  # sudden_obstacle만 확실히 해당
-                 curvature_rate_threshold: float = 0.003,        # (미사용)
-                 # PLC 파라미터 (조정됨)
-                 curvature_threshold: float = 0.003,
-                 feedforward_gain: float = 8.0,
-                 # 활성화 지속 시간
-                 activation_holdtime: float = 2.0,
-                 dt: float = 0.01):
-        
-        self.pid = pid
-        self.dt = dt
-        
-        # 활성화 조건
-        self.curvature_activation_threshold = curvature_activation_threshold
-        self.curvature_rate_threshold = curvature_rate_threshold
-        self.activation_holdtime = activation_holdtime
-        
-        # PLC 파라미터
-        self.curvature_threshold = curvature_threshold
-        self.feedforward_gain = feedforward_gain
-        
-        # Kp 적응 (보수적)
         self.kp_base = pid.kp
         self.kp_current = pid.kp
         self.log_kp = np.log(max(self.kp_current, 1e-6))
@@ -293,13 +212,77 @@ class ConditionalPLCWrapper:
         self.log_clip_bound = 0.01
         self.variance_threshold = 0.01
         
-        # 히스토리
+        self.error_history = deque(maxlen=30)
+        self.name = "PLC-Always"
+        
+    def reset(self):
+        self.pid.reset()
+        self.kp_current = self.kp_base
+        self.log_kp = np.log(max(self.kp_current, 1e-6))
+        self.error_history.clear()
+
+    def compute(self, error: float, lookahead_curvature: float) -> Tuple[float, float, bool]:
+        self.error_history.append(error)
+        
+        feedforward = 0.0
+        ff_active = abs(lookahead_curvature) > self.curvature_threshold
+        if ff_active:
+            feedforward = lookahead_curvature * self.feedforward_gain
+        
+        if len(self.error_history) >= 5:
+            variance = np.var(self.error_history)
+            if variance > self.variance_threshold:
+                log_delta = -0.01
+            else:
+                log_delta = 0.005
+            log_delta = np.clip(log_delta, -self.log_clip_bound, self.log_clip_bound)
+            self.log_kp += log_delta
+            self.log_kp = np.clip(self.log_kp, self.log_kp_min, self.log_kp_max)
+            self.kp_current = np.exp(self.log_kp)
+            self.pid.kp = self.kp_current
+        
+        pid_output = self.pid.compute(error)
+        return pid_output + feedforward, self.kp_current, ff_active
+
+
+class ConditionalPLCWrapper:
+    """조건부 PLC Controller"""
+    def __init__(self, pid: PIDController,
+                 curvature_activation_threshold: float = 0.022,
+                 curvature_rate_threshold: float = 0.003,
+                 curvature_threshold: float = 0.003,
+                 feedforward_gain: float = 8.0,
+                 activation_holdtime: float = 2.0,
+                 dt: float = 0.01):
+        
+        self.pid = pid
+        self.dt = dt
+        
+        self.curvature_activation_threshold = curvature_activation_threshold
+        self.curvature_rate_threshold = curvature_rate_threshold
+        self.activation_holdtime = activation_holdtime
+        
+        self.curvature_threshold = curvature_threshold
+        self.feedforward_gain = feedforward_gain
+        
+        self.kp_base = pid.kp
+        self.kp_current = pid.kp
+        self.log_kp = np.log(max(self.kp_current, 1e-6))
+        
+        self.kp_min = 0.7 * self.kp_base
+        self.kp_max = 1.3 * self.kp_base
+        self.log_kp_min = np.log(max(self.kp_min, 1e-6))
+        self.log_kp_max = np.log(max(self.kp_max, 1e-6))
+        
+        self.log_clip_bound = 0.01
+        self.variance_threshold = 0.01
+        
         self.error_history = deque(maxlen=30)
         self.curvature_history = deque(maxlen=50)
         
-        # 활성화 상태
         self.plc_active = False
         self.activation_timer = 0.0
+        self.name = "PLC-Conditional"
         
     def reset(self):
         self.pid.reset()
@@ -311,26 +294,14 @@ class ConditionalPLCWrapper:
         self.activation_timer = 0.0
     
     def _check_activation(self, lookahead_curvature: float) -> bool:
-        """
-        급변 상황 감지 - 절대 곡률 기준만 사용
-        (센서 노이즈로 인해 곡률 변화율은 불안정함)
-        """
         self.curvature_history.append(lookahead_curvature)
-        
-        # 조건: 전방 곡률이 급회전 수준 (sudden_obstacle만 해당)
-        # sudden_obstacle max = 0.025, 기타 시나리오 max = 0.01~0.015
         if abs(lookahead_curvature) >= self.curvature_activation_threshold:
             return True
-        
         return False
 
     def compute(self, error: float, lookahead_curvature: float) -> Tuple[float, float, bool]:
-        """
-        Returns: (steering_cmd, current_kp, plc_active)
-        """
         self.error_history.append(error)
         
-        # 활성화 조건 체크
         should_activate = self._check_activation(lookahead_curvature)
         
         if should_activate:
@@ -341,18 +312,15 @@ class ConditionalPLCWrapper:
             if self.activation_timer <= 0:
                 self.plc_active = False
         
-        # PLC 비활성 시: 순수 PID
         if not self.plc_active:
-            self.pid.kp = self.kp_base  # 기본 Kp 유지
+            self.pid.kp = self.kp_base
             pid_output = self.pid.compute(error)
             return pid_output, self.kp_base, False
         
-        # PLC 활성 시: 피드포워드 + Kp 적응
         feedforward = 0.0
         if abs(lookahead_curvature) > self.curvature_threshold:
             feedforward = lookahead_curvature * self.feedforward_gain
         
-        # Kp 적응
         if len(self.error_history) >= 5:
             variance = np.var(self.error_history)
             if variance > self.variance_threshold:
@@ -369,6 +337,10 @@ class ConditionalPLCWrapper:
         return pid_output + feedforward, self.kp_current, True
 
 
+# =========================
+# 3. 시뮬레이션 함수
+# =========================
+
 def run_simulation(controller_type: str, scenario: str, duration: float = 15.0, 
                    dt: float = 0.01, seed: int = None) -> Dict:
     """시뮬레이션 실행"""
@@ -379,7 +351,6 @@ def run_simulation(controller_type: str, scenario: str, duration: float = 15.0,
     road = RoadProfile(scenario)
     sensor = SensorModel()
     
-    # A안 Baseline PID
     pid = PIDController(kp=0.1, ki=0.0, kd=0.2, dt=dt)
     
     if controller_type == "pid":
@@ -396,7 +367,7 @@ def run_simulation(controller_type: str, scenario: str, duration: float = 15.0,
     results = {
         'time': [], 'x': [], 'y': [], 'target_y': [], 
         'lateral_error': [], 'steering': [], 'curvature': [], 
-        'kp': [], 'plc_active': []
+        'kp': [], 'plc_active': [], 'controller_name': controller_type
     }
     
     steps = int(duration / dt)
@@ -428,6 +399,11 @@ def run_simulation(controller_type: str, scenario: str, duration: float = 15.0,
         results['kp'].append(current_kp)
         results['plc_active'].append(plc_active)
     
+    # Convert to numpy arrays
+    for key in results:
+        if key != 'controller_name':
+            results[key] = np.array(results[key])
+    
     return results
 
 
@@ -440,6 +416,8 @@ def analyze_results(results: Dict) -> Dict:
     analysis = {
         'mean_all': np.mean(errors),
         'max_all': np.max(errors),
+        'std_all': np.std(errors),
+        'rms_all': np.sqrt(np.mean(errors**2)),
         'activation_rate': np.mean(results['plc_active'])
     }
     
@@ -447,202 +425,492 @@ def analyze_results(results: Dict) -> Dict:
         curve_errors = errors[curve_mask]
         analysis['mean_curve'] = np.mean(curve_errors)
         analysis['max_curve'] = np.max(curve_errors)
+        analysis['rms_curve'] = np.sqrt(np.mean(curve_errors**2))
         analysis['violation_curve'] = np.mean(curve_errors > 0.3)
     else:
         analysis['mean_curve'] = 0
         analysis['max_curve'] = 0
+        analysis['rms_curve'] = 0
         analysis['violation_curve'] = 0
     
     return analysis
 
 
-def monte_carlo(scenario: str, n_runs: int = 30) -> Dict:
-    """Monte Carlo 검증"""
+# =========================
+# 4. 시각화 함수들
+# =========================
+
+def plot_scenario_comparison(scenario: str, save_path: str):
+    """시나리오별 제어기 비교 그래프"""
+    controllers = ['pid', 'plc_always', 'plc_conditional']
+    colors = {'pid': '#d62728', 'plc_always': '#1f77b4', 'plc_conditional': '#2ca02c'}
+    labels = {'pid': 'PID (Baseline)', 'plc_always': 'PLC-Always', 'plc_conditional': 'PLC-Conditional'}
+    
+    results_list = []
+    for ctrl in controllers:
+        res = run_simulation(ctrl, scenario, duration=15.0, seed=42)
+        results_list.append(res)
+    
+    fig, axes = plt.subplots(5, 1, figsize=(14, 16), sharex=True)
+    
+    # (1) 차량 궤적 vs 목표 경로
+    ax1 = axes[0]
+    ax1.plot(results_list[0]['x'], results_list[0]['target_y'], 'k--', 
+             linewidth=2, label='Target Path', alpha=0.7)
+    for i, res in enumerate(results_list):
+        ctrl = controllers[i]
+        ax1.plot(res['x'], res['y'], color=colors[ctrl], 
+                label=labels[ctrl], linewidth=1.2, alpha=0.8)
+    ax1.set_ylabel('Y Position [m]')
+    ax1.set_title(f'Scenario: {scenario.upper()} - Vehicle Trajectory')
+    ax1.legend(loc='upper right')
+    ax1.grid(True, alpha=0.3)
+    
+    # (2) 횡방향 오차
+    ax2 = axes[1]
+    ax2.axhline(y=0, color='black', linestyle='--', alpha=0.5)
+    ax2.axhspan(-0.3, 0.3, alpha=0.15, color='green', label='±0.3m threshold')
+    for i, res in enumerate(results_list):
+        ctrl = controllers[i]
+        ax2.plot(res['x'], res['lateral_error'], color=colors[ctrl], 
+                label=labels[ctrl], linewidth=1, alpha=0.8)
+    ax2.set_ylabel('Lateral Error [m]')
+    ax2.set_title('Lateral Tracking Error')
+    ax2.legend(loc='upper right')
+    ax2.grid(True, alpha=0.3)
+    ax2.set_ylim([-1.5, 1.5])
+    
+    # (3) 도로 곡률
+    ax3 = axes[2]
+    ax3.fill_between(results_list[0]['x'], results_list[0]['curvature'], 
+                     alpha=0.3, color='gray', label='Road Curvature')
+    ax3.plot(results_list[0]['x'], results_list[0]['curvature'], 
+            color='gray', linewidth=1)
+    ax3.axhline(y=0.022, color='red', linestyle=':', alpha=0.7, 
+               label='PLC Activation Threshold')
+    ax3.set_ylabel('Curvature [1/m]')
+    ax3.set_title('Road Curvature Profile')
+    ax3.legend(loc='upper right')
+    ax3.grid(True, alpha=0.3)
+    
+    # (4) 조향 명령
+    ax4 = axes[3]
+    for i, res in enumerate(results_list):
+        ctrl = controllers[i]
+        ax4.plot(res['x'], np.degrees(res['steering']), color=colors[ctrl], 
+                label=labels[ctrl], linewidth=1, alpha=0.8)
+    ax4.set_ylabel('Steering Angle [deg]')
+    ax4.set_title('Steering Command')
+    ax4.legend(loc='upper right')
+    ax4.grid(True, alpha=0.3)
+    
+    # (5) Kp 적응 및 PLC 활성화
+    ax5 = axes[4]
+    for i, res in enumerate(results_list):
+        ctrl = controllers[i]
+        ax5.plot(res['x'], res['kp'], color=colors[ctrl], 
+                label=f"{labels[ctrl]} Kp", linewidth=1.5)
+    
+    # PLC 활성화 영역 표시 (plc_conditional만)
+    plc_cond_res = results_list[2]
+    active_regions = plc_cond_res['plc_active'].astype(float)
+    ax5_twin = ax5.twinx()
+    ax5_twin.fill_between(plc_cond_res['x'], active_regions * 0.15, 
+                          alpha=0.3, color='green', label='PLC Active')
+    ax5_twin.set_ylabel('PLC Active', color='green')
+    ax5_twin.set_ylim([0, 0.2])
+    ax5_twin.set_yticks([0, 0.15])
+    ax5_twin.set_yticklabels(['OFF', 'ON'])
+    
+    ax5.set_xlabel('X Position [m]')
+    ax5.set_ylabel('Kp Value')
+    ax5.set_title('Controller Gain Adaptation & PLC Activation')
+    ax5.legend(loc='upper left')
+    ax5.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+
+
+def plot_trajectory_2d(scenario: str, save_path: str):
+    """2D 궤적 시각화"""
+    controllers = ['pid', 'plc_always', 'plc_conditional']
+    colors = {'pid': '#d62728', 'plc_always': '#1f77b4', 'plc_conditional': '#2ca02c'}
+    labels = {'pid': 'PID', 'plc_always': 'PLC-Always', 'plc_conditional': 'PLC-Conditional'}
+    
+    results_list = []
+    for ctrl in controllers:
+        res = run_simulation(ctrl, scenario, duration=15.0, seed=42)
+        results_list.append(res)
+    
+    fig, ax = plt.subplots(figsize=(14, 6))
+    
+    # 목표 경로 (도로)
+    target_x = results_list[0]['x']
+    target_y = results_list[0]['target_y']
+    
+    # 도로 폭 표시
+    road_width = 3.5
+    ax.fill_between(target_x, target_y - road_width/2, target_y + road_width/2, 
+                   alpha=0.2, color='gray', label='Road')
+    ax.plot(target_x, target_y, 'k--', linewidth=2, label='Center Line')
+    
+    # 각 제어기 궤적
+    for i, res in enumerate(results_list):
+        ctrl = controllers[i]
+        ax.plot(res['x'], res['y'], color=colors[ctrl], 
+               label=labels[ctrl], linewidth=2, alpha=0.9)
+    
+    ax.set_xlabel('X Position [m]')
+    ax.set_ylabel('Y Position [m]')
+    ax.set_title(f'Vehicle Trajectories - {scenario.upper()}')
+    ax.legend(loc='best')
+    ax.grid(True, alpha=0.3)
+    ax.set_aspect('equal', adjustable='datalim')
+    
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+
+
+def plot_all_scenarios_metrics(save_path: str):
+    """모든 시나리오의 성능 지표 비교"""
+    scenarios = ["single_curve", "s_curve", "continuous_curves", "sudden_obstacle"]
     controllers = ['pid', 'plc_always', 'plc_conditional']
     
-    stats = {ctrl: {'mean_all': [], 'mean_curve': [], 'max_curve': [], 
-                    'violation': [], 'activation': []} for ctrl in controllers}
+    # Monte Carlo 실행 (간소화: 10회)
+    all_metrics = {sc: {ctrl: [] for ctrl in controllers} for sc in scenarios}
     
-    for run in range(n_runs):
-        seed = 1000 + run
+    print("Monte Carlo 시뮬레이션 실행 중...")
+    for sc in scenarios:
+        for run in range(10):
+            seed = 1000 + run
+            for ctrl in controllers:
+                res = run_simulation(ctrl, sc, duration=15.0, seed=seed)
+                analysis = analyze_results(res)
+                all_metrics[sc][ctrl].append(analysis)
+    
+    # 평균 계산
+    avg_metrics = {}
+    for sc in scenarios:
+        avg_metrics[sc] = {}
         for ctrl in controllers:
-            result = run_simulation(ctrl, scenario, duration=15.0, seed=seed)
-            analysis = analyze_results(result)
+            avg_metrics[sc][ctrl] = {
+                'mean_all': np.mean([m['mean_all'] for m in all_metrics[sc][ctrl]]),
+                'mean_curve': np.mean([m['mean_curve'] for m in all_metrics[sc][ctrl]]),
+                'max_curve': np.mean([m['max_curve'] for m in all_metrics[sc][ctrl]]),
+                'violation_curve': np.mean([m['violation_curve'] for m in all_metrics[sc][ctrl]]),
+                'activation_rate': np.mean([m['activation_rate'] for m in all_metrics[sc][ctrl]])
+            }
+    
+    # 그래프 생성
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    
+    x = np.arange(len(scenarios))
+    width = 0.25
+    colors = ['#d62728', '#1f77b4', '#2ca02c']
+    labels = ['PID', 'PLC-Always', 'PLC-Conditional']
+    
+    metrics_info = [
+        ('mean_all', 'Mean Lateral Error - All [m]', axes[0, 0]),
+        ('mean_curve', 'Mean Lateral Error - Curves [m]', axes[0, 1]),
+        ('max_curve', 'Max Lateral Error - Curves [m]', axes[1, 0]),
+        ('activation_rate', 'PLC Activation Rate', axes[1, 1])
+    ]
+    
+    for metric_key, metric_title, ax in metrics_info:
+        for i, ctrl in enumerate(controllers):
+            values = [avg_metrics[sc][ctrl][metric_key] for sc in scenarios]
+            if metric_key == 'activation_rate':
+                values = [v * 100 for v in values]  # 퍼센트로 변환
+            bars = ax.bar(x + i * width, values, width, label=labels[i], color=colors[i])
             
-            stats[ctrl]['mean_all'].append(analysis['mean_all'])
-            stats[ctrl]['mean_curve'].append(analysis['mean_curve'])
-            stats[ctrl]['max_curve'].append(analysis['max_curve'])
-            stats[ctrl]['violation'].append(analysis['violation_curve'])
-            stats[ctrl]['activation'].append(analysis['activation_rate'])
+            # 값 표시
+            for bar, val in zip(bars, values):
+                height = bar.get_height()
+                if metric_key == 'activation_rate':
+                    ax.text(bar.get_x() + bar.get_width()/2, height + 1,
+                           f'{val:.0f}%', ha='center', va='bottom', fontsize=8)
+                else:
+                    ax.text(bar.get_x() + bar.get_width()/2, height + 0.01,
+                           f'{val:.3f}', ha='center', va='bottom', fontsize=8)
+        
+        ax.set_ylabel(metric_title.split(' - ')[-1])
+        ax.set_title(metric_title)
+        ax.set_xticks(x + width)
+        ax.set_xticklabels([s.replace('_', '\n') for s in scenarios], fontsize=9)
+        ax.legend(loc='upper right', fontsize=8)
+        ax.grid(True, alpha=0.3, axis='y')
     
-    summary = {}
-    for ctrl in controllers:
-        summary[ctrl] = {
-            'mean_all': np.mean(stats[ctrl]['mean_all']),
-            'std_all': np.std(stats[ctrl]['mean_all']),
-            'mean_curve': np.mean(stats[ctrl]['mean_curve']),
-            'max_curve': np.mean(stats[ctrl]['max_curve']),
-            'violation': np.mean(stats[ctrl]['violation']),
-            'activation': np.mean(stats[ctrl]['activation'])
-        }
+    plt.suptitle('Performance Comparison Across All Scenarios (10 Monte Carlo Runs)', 
+                fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
     
-    return summary
+    return avg_metrics
 
+
+def plot_plc_mechanism_vehicle(save_path: str):
+    """차량 PLC 메커니즘 설명 그래프"""
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    
+    # (1) Log-domain Kp 적응
+    ax1 = axes[0, 0]
+    kp_base = 0.1
+    variance_history = np.concatenate([
+        np.ones(50) * 0.005,   # 안정
+        np.ones(50) * 0.015,   # 불안정 (진동)
+        np.ones(50) * 0.008,   # 감소
+        np.ones(50) * 0.003    # 안정
+    ])
+    
+    kp = np.zeros(200)
+    log_kp = np.log(kp_base)
+    kp_min, kp_max = 0.7 * kp_base, 1.3 * kp_base
+    variance_threshold = 0.01
+    
+    for i in range(200):
+        if variance_history[i] > variance_threshold:
+            log_delta = -0.01  # 감소 (damping)
+        else:
+            log_delta = 0.005  # 증가 (recovery)
+        log_delta = np.clip(log_delta, -0.01, 0.01)
+        log_kp += log_delta
+        log_kp = np.clip(log_kp, np.log(kp_min), np.log(kp_max))
+        kp[i] = np.exp(log_kp)
+    
+    t = np.arange(200) * 0.01
+    ax1.plot(t, variance_history, label='Error Variance', alpha=0.7, linewidth=1.5)
+    ax1.axhline(y=variance_threshold, color='red', linestyle='--', 
+               label='Threshold', alpha=0.7)
+    ax1.set_ylabel('Variance', color='tab:blue')
+    ax1.tick_params(axis='y', labelcolor='tab:blue')
+    
+    ax1_twin = ax1.twinx()
+    ax1_twin.plot(t, kp, color='green', label='Kp', linewidth=2)
+    ax1_twin.axhline(y=kp_base, color='gray', linestyle=':', alpha=0.5)
+    ax1_twin.set_ylabel('Kp Value', color='green')
+    ax1_twin.tick_params(axis='y', labelcolor='green')
+    
+    ax1.set_xlabel('Time [s]')
+    ax1.set_title('Log-domain Kp Adaptation\n(Variance ↑ → Kp ↓, Variance ↓ → Kp ↑)')
+    ax1.legend(loc='upper left')
+    ax1.grid(True, alpha=0.3)
+    
+    # (2) Feedforward 효과
+    ax2 = axes[0, 1]
+    x = np.linspace(0, 300, 500)
+    road = RoadProfile("sudden_obstacle")
+    curvature = np.array([road.get_reference(xi)[1] for xi in x])
+    
+    ax2.plot(x, curvature * 1000, label='Road Curvature × 1000', linewidth=2)
+    ax2.axhline(y=3, color='orange', linestyle='--', 
+               label='FF Threshold (0.003)', alpha=0.7)
+    ax2.axhline(y=22, color='red', linestyle='--', 
+               label='PLC Activation (0.022)', alpha=0.7)
+    
+    # Feedforward 영역 표시
+    ff_active = np.abs(curvature) > 0.003
+    ax2.fill_between(x, 0, 30, where=ff_active, alpha=0.2, 
+                    color='blue', label='Feedforward Active')
+    
+    ax2.set_xlabel('X Position [m]')
+    ax2.set_ylabel('Curvature × 1000 [1/m]')
+    ax2.set_title('Curvature-based Feedforward Activation\n(Sudden Obstacle Scenario)')
+    ax2.legend(loc='upper right')
+    ax2.grid(True, alpha=0.3)
+    ax2.set_ylim([-5, 35])
+    
+    # (3) 조건부 활성화 vs 항상 활성화
+    ax3 = axes[1, 0]
+    scenarios = ['single_curve', 's_curve', 'continuous_curves', 'sudden_obstacle']
+    max_curvatures = [0.01, 0.015, 0.012, 0.025]
+    
+    x_pos = np.arange(len(scenarios))
+    bars = ax3.bar(x_pos, np.array(max_curvatures) * 1000, color='steelblue', alpha=0.7)
+    ax3.axhline(y=22, color='red', linestyle='--', linewidth=2,
+               label='Conditional Activation Threshold (0.022)')
+    
+    # 임계값 초과 여부 표시
+    for i, (bar, curv) in enumerate(zip(bars, max_curvatures)):
+        color = 'green' if curv >= 0.022 else 'gray'
+        bar.set_color(color)
+        ax3.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
+                f'{curv*1000:.0f}', ha='center', fontsize=10, fontweight='bold')
+    
+    ax3.set_xticks(x_pos)
+    ax3.set_xticklabels([s.replace('_', '\n') for s in scenarios])
+    ax3.set_ylabel('Max Curvature × 1000 [1/m]')
+    ax3.set_title('Scenario Max Curvature vs Activation Threshold\n(Green = PLC Activated)')
+    ax3.legend(loc='upper left')
+    ax3.grid(True, alpha=0.3, axis='y')
+    
+    # (4) PID vs PLC 응답 비교
+    ax4 = axes[1, 1]
+    
+    # 단순화된 시뮬레이션
+    res_pid = run_simulation('pid', 'sudden_obstacle', duration=12.0, seed=42)
+    res_plc = run_simulation('plc_conditional', 'sudden_obstacle', duration=12.0, seed=42)
+    
+    # 급변 구간만 확대
+    mask = (res_pid['x'] > 130) & (res_pid['x'] < 200)
+    
+    ax4.plot(res_pid['x'][mask], res_pid['lateral_error'][mask], 
+            'r-', label='PID', linewidth=1.5, alpha=0.8)
+    ax4.plot(res_plc['x'][mask], res_plc['lateral_error'][mask], 
+            'g-', label='PLC-Conditional', linewidth=1.5, alpha=0.8)
+    ax4.axhline(y=0, color='black', linestyle='--', alpha=0.5)
+    ax4.axhspan(-0.3, 0.3, alpha=0.15, color='green')
+    
+    # 장애물 위치 표시
+    ax4.axvspan(140, 160, alpha=0.2, color='red', label='Obstacle Zone')
+    
+    ax4.set_xlabel('X Position [m]')
+    ax4.set_ylabel('Lateral Error [m]')
+    ax4.set_title('Response Comparison at Sudden Obstacle\n(PLC reduces overshoot)')
+    ax4.legend(loc='upper right')
+    ax4.grid(True, alpha=0.3)
+    
+    plt.suptitle('PLC Mechanism for Vehicle Steering Control', 
+                fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+
+
+def plot_improvement_summary(avg_metrics: Dict, save_path: str):
+    """개선율 요약 그래프"""
+    scenarios = list(avg_metrics.keys())
+    
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    
+    # (1) PLC-Always vs PID 개선율
+    ax1 = axes[0]
+    improvements_always = []
+    for sc in scenarios:
+        pid_val = avg_metrics[sc]['pid']['mean_curve']
+        plc_val = avg_metrics[sc]['plc_always']['mean_curve']
+        if pid_val > 0:
+            imp = (1 - plc_val / pid_val) * 100
+        else:
+            imp = 0
+        improvements_always.append(imp)
+    
+    colors = ['green' if v > 0 else 'red' for v in improvements_always]
+    bars1 = ax1.bar(scenarios, improvements_always, color=colors, alpha=0.7)
+    ax1.axhline(y=0, color='black', linestyle='-', linewidth=1)
+    ax1.set_ylabel('Improvement vs PID [%]')
+    ax1.set_title('PLC-Always Improvement\n(Curve Sections)')
+    ax1.set_xticklabels([s.replace('_', '\n') for s in scenarios])
+    ax1.grid(True, alpha=0.3, axis='y')
+    
+    for bar, val in zip(bars1, improvements_always):
+        height = bar.get_height()
+        ax1.text(bar.get_x() + bar.get_width()/2, 
+                height + (2 if height >= 0 else -4),
+                f'{val:+.1f}%', ha='center', fontsize=10, fontweight='bold')
+    
+    # (2) PLC-Conditional vs PID 개선율
+    ax2 = axes[1]
+    improvements_cond = []
+    for sc in scenarios:
+        pid_val = avg_metrics[sc]['pid']['mean_curve']
+        plc_val = avg_metrics[sc]['plc_conditional']['mean_curve']
+        if pid_val > 0:
+            imp = (1 - plc_val / pid_val) * 100
+        else:
+            imp = 0
+        improvements_cond.append(imp)
+    
+    colors = ['green' if v > 0 else 'red' for v in improvements_cond]
+    bars2 = ax2.bar(scenarios, improvements_cond, color=colors, alpha=0.7)
+    ax2.axhline(y=0, color='black', linestyle='-', linewidth=1)
+    ax2.set_ylabel('Improvement vs PID [%]')
+    ax2.set_title('PLC-Conditional Improvement\n(Curve Sections)')
+    ax2.set_xticklabels([s.replace('_', '\n') for s in scenarios])
+    ax2.grid(True, alpha=0.3, axis='y')
+    
+    for bar, val in zip(bars2, improvements_cond):
+        height = bar.get_height()
+        ax2.text(bar.get_x() + bar.get_width()/2, 
+                height + (2 if height >= 0 else -4),
+                f'{val:+.1f}%', ha='center', fontsize=10, fontweight='bold')
+    
+    plt.suptitle('PLC Performance Improvement over PID Baseline', 
+                fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+
+
+# =========================
+# 5. 메인 함수
+# =========================
 
 def main():
-    print("=" * 105)
-    print("PLC-PID Conditional Activation Test")
-    print("=" * 105)
-    print("\n[설정]")
-    print("  PID Baseline (A안): kp=0.1, ki=0.0, kd=0.2")
-    print("  PLC 파라미터: curvature_threshold=0.003, feedforward_gain=8.0")
-    print("  Kp 범위: 0.7~1.3 × kp_base, log_clip=0.01")
-    print("  활성화 조건: curvature >= 0.020 OR curvature_rate >= 0.003/s")
-    print("  (sudden_obstacle max curvature = 0.025, 기타 시나리오 max = 0.01~0.015)")
+    print("=" * 80)
+    print("PLC-PID Vehicle Steering Control - Visualization")
+    print("=" * 80)
     
+    # 출력 디렉토리 설정 (현재 디렉토리에 output 폴더 생성)
+    import os
+    output_dir = os.path.join(os.getcwd(), "plc_output")
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"\n출력 디렉토리: {output_dir}")
+    
+    # 시나리오별 상세 비교 그래프
     scenarios = ["single_curve", "s_curve", "continuous_curves", "sudden_obstacle"]
     
-    # Sanity check
-    print("\n" + "=" * 105)
-    print("SANITY CHECK (Single Run, seed=42)")
-    print("-" * 105)
-    
+    print("\n시나리오별 비교 그래프 생성 중...")
     for scenario in scenarios:
-        for ctrl in ['pid', 'plc_always', 'plc_conditional']:
-            r = run_simulation(ctrl, scenario, seed=42)
-            a = analyze_results(r)
-            act_str = f"{a['activation_rate']*100:5.1f}%" if ctrl != 'pid' else "  N/A"
-            print(f"{scenario:<20} | {ctrl:<15} | MeanAll={a['mean_all']:.4f}m | "
-                  f"MeanCurve={a['mean_curve']:.4f}m | Activation={act_str}")
-        print("-" * 105)
+        print(f"  - {scenario}...")
+        plot_scenario_comparison(scenario, os.path.join(output_dir, f"vehicle_{scenario}.png"))
+        plot_trajectory_2d(scenario, os.path.join(output_dir, f"trajectory_{scenario}.png"))
     
-    # Monte Carlo
-    print("\n" + "=" * 105)
-    print("MONTE CARLO VALIDATION (30 runs)")
-    print("=" * 105)
+    # 전체 성능 지표 비교
+    print("\n전체 성능 지표 비교 그래프 생성 중...")
+    avg_metrics = plot_all_scenarios_metrics(os.path.join(output_dir, "vehicle_metrics_all.png"))
     
-    all_results = {}
-    for scenario in scenarios:
-        print(f"Processing: {scenario}...")
-        all_results[scenario] = monte_carlo(scenario, n_runs=30)
+    # PLC 메커니즘 설명
+    print("\nPLC 메커니즘 설명 그래프 생성 중...")
+    plot_plc_mechanism_vehicle(os.path.join(output_dir, "vehicle_plc_mechanism.png"))
     
-    # 결과 테이블
-    print("\n" + "=" * 105)
-    print("RESULTS SUMMARY")
-    print("=" * 105)
+    # 개선율 요약
+    print("\n개선율 요약 그래프 생성 중...")
+    plot_improvement_summary(avg_metrics, os.path.join(output_dir, "vehicle_improvement.png"))
     
-    # Mean Error (All)
-    print("\n[1] Mean Lateral Error - All Sections (m)")
-    print("-" * 105)
-    print(f"{'Scenario':<20} | {'PID':>10} | {'PLC-always':>10} | {'PLC-cond':>10} | "
-          f"{'Always vs PID':>14} | {'Cond vs PID':>14}")
-    print("-" * 105)
-    for scenario, data in all_results.items():
-        pid = data['pid']['mean_all']
-        always = data['plc_always']['mean_all']
-        cond = data['plc_conditional']['mean_all']
+    # 결과 요약 출력
+    print("\n" + "=" * 80)
+    print("결과 요약")
+    print("=" * 80)
+    
+    print("\n[시나리오별 Mean Lateral Error (Curve Sections)]")
+    print("-" * 70)
+    print(f"{'Scenario':<20} | {'PID':>10} | {'PLC-Always':>12} | {'PLC-Cond':>12}")
+    print("-" * 70)
+    for sc in scenarios:
+        pid = avg_metrics[sc]['pid']['mean_curve']
+        always = avg_metrics[sc]['plc_always']['mean_curve']
+        cond = avg_metrics[sc]['plc_conditional']['mean_curve']
+        print(f"{sc:<20} | {pid:>10.4f} | {always:>12.4f} | {cond:>12.4f}")
+    
+    print("\n[PID 대비 개선율 (%)]")
+    print("-" * 70)
+    print(f"{'Scenario':<20} | {'PLC-Always':>12} | {'PLC-Cond':>12}")
+    print("-" * 70)
+    for sc in scenarios:
+        pid = avg_metrics[sc]['pid']['mean_curve']
+        always = avg_metrics[sc]['plc_always']['mean_curve']
+        cond = avg_metrics[sc]['plc_conditional']['mean_curve']
         imp_always = (1 - always / pid) * 100 if pid > 0 else 0
         imp_cond = (1 - cond / pid) * 100 if pid > 0 else 0
-        print(f"{scenario:<20} | {pid:>10.4f} | {always:>10.4f} | {cond:>10.4f} | "
-              f"{imp_always:>+13.1f}% | {imp_cond:>+13.1f}%")
+        print(f"{sc:<20} | {imp_always:>+11.1f}% | {imp_cond:>+11.1f}%")
     
-    # Mean Error (Curve)
-    print("\n[2] Mean Lateral Error - Curve Sections Only (m)")
-    print("-" * 105)
-    print(f"{'Scenario':<20} | {'PID':>10} | {'PLC-always':>10} | {'PLC-cond':>10} | "
-          f"{'Always vs PID':>14} | {'Cond vs PID':>14}")
-    print("-" * 105)
-    for scenario, data in all_results.items():
-        pid = data['pid']['mean_curve']
-        always = data['plc_always']['mean_curve']
-        cond = data['plc_conditional']['mean_curve']
-        imp_always = (1 - always / pid) * 100 if pid > 0 else 0
-        imp_cond = (1 - cond / pid) * 100 if pid > 0 else 0
-        print(f"{scenario:<20} | {pid:>10.4f} | {always:>10.4f} | {cond:>10.4f} | "
-              f"{imp_always:>+13.1f}% | {imp_cond:>+13.1f}%")
-    
-    # Violation Rate
-    print("\n[3] Violation Rate (>0.3m in Curve Sections)")
-    print("-" * 105)
-    print(f"{'Scenario':<20} | {'PID':>10} | {'PLC-always':>10} | {'PLC-cond':>10} | "
-          f"{'Always vs PID':>14} | {'Cond vs PID':>14}")
-    print("-" * 105)
-    for scenario, data in all_results.items():
-        pid = data['pid']['violation'] * 100
-        always = data['plc_always']['violation'] * 100
-        cond = data['plc_conditional']['violation'] * 100
-        imp_always = (1 - always / max(pid, 0.1)) * 100
-        imp_cond = (1 - cond / max(pid, 0.1)) * 100
-        print(f"{scenario:<20} | {pid:>9.1f}% | {always:>9.1f}% | {cond:>9.1f}% | "
-              f"{imp_always:>+13.1f}% | {imp_cond:>+13.1f}%")
-    
-    # PLC Activation Rate
-    print("\n[4] PLC Activation Rate")
-    print("-" * 105)
-    print(f"{'Scenario':<20} | {'PLC-always':>12} | {'PLC-cond':>12} | {'Selectivity':>14}")
-    print("-" * 105)
-    for scenario, data in all_results.items():
-        always = data['plc_always']['activation'] * 100
-        cond = data['plc_conditional']['activation'] * 100
-        selectivity = (1 - cond / max(always, 0.1)) * 100
-        print(f"{scenario:<20} | {always:>11.1f}% | {cond:>11.1f}% | {selectivity:>+13.1f}%")
-    
-    # 종합 분석
-    print("\n" + "=" * 105)
-    print("CONCLUSION")
-    print("=" * 105)
-    
-    sudden = all_results['sudden_obstacle']
-    other_scenarios = ['single_curve', 's_curve', 'continuous_curves']
-    
-    print("\n[성능 비교]")
-    
-    # PLC-always
-    sudden_imp_always = (1 - sudden['plc_always']['mean_curve'] / sudden['pid']['mean_curve']) * 100
-    other_imp_always = np.mean([(1 - all_results[s]['plc_always']['mean_curve'] / 
-                                  all_results[s]['pid']['mean_curve']) * 100 
-                                 for s in other_scenarios if all_results[s]['pid']['mean_curve'] > 0])
-    print(f"\nPLC-always:")
-    print(f"  Sudden Obstacle 개선: {sudden_imp_always:+.1f}%")
-    print(f"  기타 시나리오 평균:   {other_imp_always:+.1f}%")
-    
-    # PLC-conditional
-    sudden_imp_cond = (1 - sudden['plc_conditional']['mean_curve'] / sudden['pid']['mean_curve']) * 100
-    other_imp_cond = np.mean([(1 - all_results[s]['plc_conditional']['mean_curve'] / 
-                               all_results[s]['pid']['mean_curve']) * 100 
-                              for s in other_scenarios if all_results[s]['pid']['mean_curve'] > 0])
-    print(f"\nPLC-conditional:")
-    print(f"  Sudden Obstacle 개선: {sudden_imp_cond:+.1f}%")
-    print(f"  기타 시나리오 평균:   {other_imp_cond:+.1f}%")
-    
-    # 활성화 선택성
-    print("\n[활성화 선택성]")
-    sudden_act = sudden['plc_conditional']['activation'] * 100
-    other_act = np.mean([all_results[s]['plc_conditional']['activation'] * 100 for s in other_scenarios])
-    print(f"  Sudden Obstacle: {sudden_act:.1f}%")
-    print(f"  기타 시나리오:   {other_act:.1f}%")
-    
-    # 최종 판단
-    print("\n" + "-" * 105)
-    print("[최종 판단]")
-    
-    if sudden_imp_cond > 5 and other_imp_cond > -3:
-        print("  ✓ 조건부 PLC 성공!")
-        print("    → Sudden Obstacle에서 개선")
-        print("    → 기타 시나리오에서 부작용 최소화")
-    elif sudden_imp_cond > sudden_imp_always:
-        print("  △ 부분 성공:")
-        print("    → PLC-always보다 선택적 활성화로 일부 개선")
-        print("    → 임계값 추가 튜닝 권장")
-    elif sudden_act > other_act * 1.5:
-        print("  △ 선택성은 양호:")
-        print("    → 급변 상황에서 더 많이 활성화됨")
-        print("    → 피드포워드 게인 조정 권장")
-    else:
-        print("  ✗ 추가 튜닝 필요:")
-        print("    → 활성화 임계값 또는 피드포워드 게인 재검토")
-    
-    print("-" * 105)
+    print("\n" + "=" * 80)
+    print("그래프 생성 완료!")
+    print("=" * 80)
 
 
 if __name__ == "__main__":
